@@ -1,0 +1,108 @@
+{
+  "entities": {
+    "Agency": {
+      "title": "Agency",
+      "description": "A courier agency registered on the platform",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "contact": { "type": "string" },
+        "tier": { "type": "string", "enum": ["Standard", "Premium", "Enterprise"] },
+        "active": { "type": "boolean" },
+        "logoUrl": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "active"]
+    },
+    "User": {
+      "title": "User",
+      "description": "A platform user (Admin, Agency Staff, or Driver)",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "role": { "type": "string", "enum": ["ADMIN", "AGENCY_STAFF", "DRIVER"] },
+        "agencyId": { "type": "string" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["name", "email", "role"]
+    },
+    "Ticket": {
+      "title": "Ticket",
+      "description": "A delivery ticket containing sender, receiver, and package info",
+      "type": "object",
+      "properties": {
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "senderPhone": { "type": "string" },
+        "senderAddress": { "type": "string" },
+        "receiverName": { "type": "string" },
+        "receiverPhone": { "type": "string" },
+        "receiverAddress": { "type": "string" },
+        "packageType": { "type": "string" },
+        "weight": { "type": "number" },
+        "declaredValue": { "type": "number" },
+        "agencyId": { "type": "string" },
+        "driverId": { "type": "string" },
+        "status": { "type": "string", "enum": ["Created", "Picked Up", "In Transit", "At Customs", "Approved", "Out for Delivery", "Delivered", "Delayed"] },
+        "route": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["senderName", "receiverName", "packageType", "agencyId", "status"]
+    },
+    "TrackingLog": {
+      "title": "TrackingLog",
+      "description": "Real-time location updates for a ticket",
+      "type": "object",
+      "properties": {
+        "ticketId": { "type": "string" },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "statusUpdate": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ticketId", "lat", "lng", "timestamp"]
+    },
+    "RRARecord": {
+      "title": "RRARecord",
+      "description": "RRA clearance data for a ticket",
+      "type": "object",
+      "properties": {
+        "ticketId": { "type": "string" },
+        "declaredValue": { "type": "number" },
+        "duty": { "type": "number" },
+        "status": { "type": "string", "enum": ["Pending", "Doc Upload", "In Review", "Approved", "Paid & Released"] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ticketId", "status"]
+    }
+  },
+  "firestore": {
+    "agencies": {
+      "schema": "Agency",
+      "description": "Collection of courier agencies"
+    },
+    "users": {
+      "schema": "User",
+      "description": "Collection of platform users"
+    },
+    "tickets": {
+      "schema": "Ticket",
+      "description": "Delivery tickets"
+    },
+    "tickets/{ticketId}/tracking": {
+      "schema": "TrackingLog",
+      "description": "Location tracking logs for a specific ticket"
+    },
+    "rra_records": {
+      "schema": "RRARecord",
+      "description": "Compliance and clearance records"
+    },
+    "drivers": {
+      "schema": "User",
+      "description": "Collection of drivers"
+    }
+  }
+}

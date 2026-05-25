@@ -1,0 +1,6 @@
+{
+  "name": "RCTTS - Rwanda Courier Platform",
+  "description": "A comprehensive tracking, ticketing, and compliance platform for courier agencies in Rwanda, integrated with RRA clearance workflows.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

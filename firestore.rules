@@ -1,0 +1,77 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Basic test collection for connectivity check
+    match /test/{docId} {
+      allow read: if true;
+    }
+
+    // --- Collections ---
+
+    match /agencies/{agencyId} {
+      allow read: if true;
+      allow create, update: if true; // Allow seeding and demo edits
+    }
+
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create, update: if true; // Simplified for demo
+      allow update: if (request.auth.uid == userId) && 
+                    incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone']);
+    }
+
+    match /custom_users/{userId} {
+      allow read: if true;
+      allow create, update: if true;
+      allow delete: if true;
+    }
+
+    match /tickets/{ticketId} {
+      allow read: if true;
+      allow create: if true; 
+      allow update: if true; // Allow status updates in demo
+      
+      match /tracking/{logId} {
+        allow read: if true;
+        allow create: if true;
+      }
+    }
+
+    match /rra_records/{rraId} {
+      allow read: if true;
+      allow create, update: if true;
+    }
+
+    match /drivers/{driverId} {
+      allow read: if true;
+      allow create, update: if true;
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Global Helpers
+    function isSignedIn() { return request.auth != null; }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    
+    function isAdmin() { 
+      return isSignedIn() && (
+             request.auth.token.email == 'iradukunda1ricky@gmail.com' ||
+             (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'ADMIN') ||
+             (exists(/databases/$(database)/documents/custom_users/$(request.auth.uid)) &&
+              get(/databases/$(database)/documents/custom_users/$(request.auth.uid)).data.role == 'admin')
+      );
+    }
+
+    function isAgencyStaff(agencyId) {
+      return isSignedIn() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.agencyId == agencyId;
+    }
+  }
+}
