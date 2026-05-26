@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { collection, onSnapshot, query, orderBy, addDoc, setDoc, serverTimestamp, getDocs, updateDoc, deleteDoc, doc } from 'firebase/firestore';
-import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
+import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, signInWithPopup, signInWithRedirect, getRedirectResult, GoogleAuthProvider } from 'firebase/auth';
 import { db, auth } from './firebase';
 import TrackingMap from './components/TrackingMap';
 import GeneralFleetMap from './components/GeneralFleetMap';
@@ -97,6 +97,40 @@ export default function App() {
       setAuthLoading(false);
     });
     return () => unsubAuth();
+  }, []);
+
+  // Handle redirect sign-in results (when signInWithRedirect was used)
+  useEffect(() => {
+    const handleRedirect = async () => {
+      try {
+        const result = await getRedirectResult(auth);
+        if (result && result.user) {
+          // Same provisioning flow used after popup sign-in
+          const uid = result.user.uid;
+          const email = result.user.email || '';
+          const displayName = result.user.displayName || 'Google User';
+
+          const usersSnap = await getDocs(query(collection(db, 'custom_users')));
+          const match = usersSnap.docs.find(d => d.id === uid || d.data().email === email);
+          if (!match) {
+            await setDoc(doc(db, 'custom_users', uid), {
+              id: uid,
+              name: displayName,
+              email: email,
+              role: 'recipient' as UserPersona,
+              agency: 'NCTA Regulator',
+              status: 'Active',
+              createdAt: serverTimestamp()
+            });
+          }
+          setAuthSuccess('Google sign-in validated (redirect)!');
+        }
+      } catch (err: any) {
+        console.error('Redirect result handling failed:', err);
+        // don't surface to UI aggressively; onAuthStateChanged will update state
+      }
+    };
+    handleRedirect();
   }, []);
 
   // Compute internal permissions and roles by matching user ID or email with Custom Users pool
@@ -368,7 +402,20 @@ export default function App() {
     setAuthSuccess(null);
     try {
       const provider = new GoogleAuthProvider();
-      const userCredential = await signInWithPopup(auth, provider);
+      // Try popup first (preferred for UX). If browser blocks popups, fall back to redirect.
+      let userCredential: any = null;
+      try {
+        userCredential = await signInWithPopup(auth, provider);
+      } catch (popupErr: any) {
+        console.warn('Popup sign-in failed, falling back to redirect:', popupErr?.code || popupErr?.message || popupErr);
+        // Detect common popup-blocked errors and use redirect as a reliable fallback
+        if (popupErr && (popupErr.code === 'auth/popup-blocked' || popupErr.code === 'auth/popup-closed-by-user' || String(popupErr.message).toLowerCase().includes('popup') || popupErr.code === 'auth/operation-not-supported-in-this-environment')) {
+          setAuthSuccess('Popup blocked. Redirecting to Google sign-in...');
+          await signInWithRedirect(auth, provider);
+          return;
+        }
+        throw popupErr;
+      }
       const uid = userCredential.user.uid;
       const email = userCredential.user.email || '';
       const displayName = userCredential.user.displayName || 'Google User';
@@ -724,37 +771,86 @@ export default function App() {
       setGpsBroadcasting(false);
       return;
     }
-    
-    const watchId = navigator.geolocation.watchPosition(
-      async (position) => {
-        const { latitude, longitude } = position.coords;
-        setBroadcastingCoords({ lat: latitude, lng: longitude });
-        
-        try {
-          await updateDoc(doc(db, 'tickets', ticketId), {
-            currentLat: latitude,
-            currentLng: longitude,
-            status: 'In Transit',
-            lastGpsUpdate: new Date().toISOString()
-          });
-        } catch (err) {
-          console.error("Failed to update Firestore coordinates docs: ", err);
+    // Use Permissions API when available to inform the user and avoid silent failures
+    const attemptStart = async () => {
+      try {
+        if ((navigator as any).permissions && (navigator as any).permissions.query) {
+          try {
+            const perm = await (navigator as any).permissions.query({ name: 'geolocation' });
+            if (perm.state === 'denied') {
+              alert('Location access is denied for this origin. Please enable location permission in your browser for live GPS broadcast or use the simulator.');
+              setIsSimulationActive(true);
+              setGpsBroadcasting(false);
+              return;
+            }
+          } catch (e) {
+            // ignore permission query errors
+          }
         }
-      },
-      (err) => {
-        console.error("GPS telemetry collection failed: ", err);
-        alert(`Hardware location error: ${err.message}. Enabling virtual route simulator instead.`);
-        // Fallback to simulation automatically for convenience
+
+        // Prompt for permission explicitly using getCurrentPosition so the browser shows a prompt
+        const getCurrentPositionAsync = () => new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
+        });
+
+        try {
+          const pos = await getCurrentPositionAsync();
+          const { latitude, longitude } = pos.coords;
+          setBroadcastingCoords({ lat: latitude, lng: longitude });
+        } catch (err: any) {
+          console.error('Initial GPS permission or position failed:', err);
+          if (err && err.code === 1) { // PERMISSION_DENIED
+            alert('Please allow location access in your browser to broadcast live GPS. Falling back to simulator.');
+            setIsSimulationActive(true);
+            setGpsBroadcasting(false);
+            return;
+          }
+          // Other errors fallback to simulator
+          setIsSimulationActive(true);
+          return;
+        }
+
+        const watchId = navigator.geolocation.watchPosition(
+          async (position) => {
+            const { latitude, longitude } = position.coords;
+            setBroadcastingCoords({ lat: latitude, lng: longitude });
+
+            try {
+              await updateDoc(doc(db, 'tickets', ticketId), {
+                currentLat: latitude,
+                currentLng: longitude,
+                status: 'In Transit',
+                lastGpsUpdate: new Date().toISOString()
+              });
+            } catch (err) {
+              console.error("Failed to update Firestore coordinates docs: ", err);
+            }
+          },
+          (err) => {
+            console.error("GPS telemetry collection failed: ", err);
+            if (err && err.code === 1) {
+              alert('Location permission was denied. Enabling virtual route simulator instead.');
+            } else {
+              alert(`Hardware location error: ${err?.message || 'Unknown error'}. Enabling virtual route simulator instead.`);
+            }
+            setIsSimulationActive(true);
+          },
+          {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+          }
+        );
+
+        setGpsWatchId(watchId);
+      } catch (outerErr) {
+        console.error('Failed to start GPS broadcast:', outerErr);
         setIsSimulationActive(true);
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 0
+        setGpsBroadcasting(false);
       }
-    );
-    
-    setGpsWatchId(watchId);
+    };
+
+    attemptStart();
   };
 
   const stopLiveGpsBroadcast = async () => {
