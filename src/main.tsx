@@ -2,10 +2,7 @@ import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
-import { seedInitialData } from './seed';
-
-// Seed demo data
-seedInitialData();
+// Seeding disabled: Super admin will add agencies via admin interface
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
