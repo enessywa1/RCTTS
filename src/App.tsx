@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, signInWithPopup, signInWithRedirect, getRedirectResult, GoogleAuthProvider } from 'firebase/auth';
 import { auth } from './firebase';
 import api from './api';
+import wsClient from './ws';
 import TrackingMap from './components/TrackingMap';
 import GeneralFleetMap from './components/GeneralFleetMap';
 import { getRoutePath, getInterpolatedPoint } from './utils/routing';
@@ -704,31 +705,43 @@ export default function App() {
 
     let unsubscribers: Array<() => void> = [];
 
-    const subscribeCollection = async (name: string, setter: (v: any[]) => void) => {
+    const fetchInitial = async (name: string, setter: (v: any[]) => void) => {
       try {
         const list = await api.getList(name);
         setter(list || []);
-      } catch (e) {
-        console.error(`Failed to fetch ${name}:`, e);
-      }
-      const unsub = api.subscribe(name, (ev) => {
-        const payload = ev.payload;
-        if (ev.event === 'create') {
-          setter(prev => [payload, ...prev]);
-        } else if (ev.event === 'update') {
-          setter(prev => prev.map(p => p.id === payload.id ? { ...p, ...payload } : p));
-        } else if (ev.event === 'delete') {
-          setter(prev => prev.filter(p => p.id !== payload.id));
-        }
-      });
-      unsubscribers.push(unsub);
+      } catch (e) { console.error(e); }
     };
 
-    subscribeCollection('tickets', setTickets);
-    subscribeCollection('agencies', setAgencies);
-    subscribeCollection('rra_records', setRraRecords);
-    subscribeCollection('drivers', setDrivers);
-    subscribeCollection('custom_users', setCustomUsers);
+    fetchInitial('tickets', setTickets);
+    fetchInitial('agencies', setAgencies);
+    fetchInitial('rra_records', setRraRecords);
+    fetchInitial('drivers', setDrivers);
+    fetchInitial('custom_users', setCustomUsers);
+
+    const handler = (topic: string, msg: any) => {
+      const ev = msg; // server sends { event, payload }
+      const payload = ev.payload || ev;
+      if (topic === 'tickets') {
+        if (ev.event === 'create') setTickets(prev => [payload, ...prev]);
+        if (ev.event === 'update') setTickets(prev => prev.map(p => p.id === payload.id ? { ...p, ...payload } : p));
+        if (ev.event === 'delete') setTickets(prev => prev.filter(p => p.id !== payload.id));
+      }
+      if (topic === 'agencies') {
+        if (ev.event === 'create') setAgencies(prev => [payload, ...prev]);
+        if (ev.event === 'update') setAgencies(prev => prev.map(p => p.id === payload.id ? { ...p, ...payload } : p));
+      }
+      if (topic === 'drivers') {
+        if (ev.event === 'create') setDrivers(prev => [payload, ...prev]);
+        if (ev.event === 'update') setDrivers(prev => prev.map(p => p.id === payload.id ? { ...p, ...payload } : p));
+      }
+      if (topic === 'custom_users') {
+        if (ev.event === 'create') setCustomUsers(prev => [payload, ...prev]);
+        if (ev.event === 'update') setCustomUsers(prev => prev.map(p => p.id === payload.id ? { ...p, ...payload } : p));
+      }
+    };
+
+    const unsub = wsClient.subscribe(handler);
+    unsubscribers.push(unsub);
 
     return () => {
       unsubscribers.forEach(u => u());

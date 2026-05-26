@@ -4,6 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { pool, ensureSchema } from './server/db';
 import admin from 'firebase-admin';
+import fs from 'fs';
 import fetch from 'node-fetch';
 import http from 'http';
 import { WebSocketServer } from 'ws';
