@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { collection, onSnapshot, query, orderBy, addDoc, setDoc, serverTimestamp, getDocs, updateDoc, deleteDoc, doc } from 'firebase/firestore';
 import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, signInWithPopup, signInWithRedirect, getRedirectResult, GoogleAuthProvider } from 'firebase/auth';
-import { db, auth } from './firebase';
+import { auth } from './firebase';
+import api from './api';
 import TrackingMap from './components/TrackingMap';
 import GeneralFleetMap from './components/GeneralFleetMap';
 import { getRoutePath, getInterpolatedPoint } from './utils/routing';
@@ -110,18 +110,10 @@ export default function App() {
           const email = result.user.email || '';
           const displayName = result.user.displayName || 'Google User';
 
-          const usersSnap = await getDocs(query(collection(db, 'custom_users')));
-          const match = usersSnap.docs.find(d => d.id === uid || d.data().email === email);
+          const users = await api.getList('custom_users');
+          const match = users.find((d: any) => d.id === uid || d.email === email);
           if (!match) {
-            await setDoc(doc(db, 'custom_users', uid), {
-              id: uid,
-              name: displayName,
-              email: email,
-              role: 'recipient' as UserPersona,
-              agency: 'NCTA Regulator',
-              status: 'Active',
-              createdAt: serverTimestamp()
-            });
+            await api.createDoc('custom_users', { id: uid, name: displayName, email, role: 'recipient', agency: 'NCTA Regulator', status: 'Active', createdAt: new Date().toISOString() });
           }
           setAuthSuccess('Google sign-in validated (redirect)!');
         }
@@ -294,12 +286,11 @@ export default function App() {
     setTimeout(async () => {
       const path = 'tickets';
       try {
-        const q = query(collection(db, path));
-        const snap = await getDocs(q);
-        const found = snap.docs.find(d => `#RW-${d.id.slice(0, 4).toUpperCase()}` === searchId || d.id === searchId);
-        setTrackResult(found ? { id: found.id, ...found.data() } : null);
+        const list: any[] = await api.getList(path);
+        const found = list.find(d => `#RW-${String(d.id).slice(0,4).toUpperCase()}` === searchId || d.id === searchId);
+        setTrackResult(found || null);
       } catch (error) {
-        handleFirestoreError(error, OperationType.GET, path);
+        console.error(error);
       } finally {
         setTrackingLoading(false);
       }
@@ -315,12 +306,11 @@ export default function App() {
     setTimeout(async () => {
       const path = 'tickets';
       try {
-        const q = query(collection(db, path));
-        const snap = await getDocs(q);
-        const found = snap.docs.find(d => `#RW-${d.id.slice(0, 4).toUpperCase()}` === formatted || d.id === id);
-        setTrackResult(found ? { id: found.id, ...found.data() } : null);
+        const list: any[] = await api.getList(path);
+        const found = list.find(d => `#RW-${String(d.id).slice(0,4).toUpperCase()}` === formatted || d.id === id);
+        setTrackResult(found || null);
       } catch (error) {
-        handleFirestoreError(error, OperationType.GET, path);
+        console.error(error);
       } finally {
         setTrackingLoading(false);
       }
@@ -340,15 +330,15 @@ export default function App() {
       const userCredential = await createUserWithEmailAndPassword(auth, authEmail, authPassword);
       const uid = userCredential.user.uid;
       
-      // Save profile in Firestore custom_users using setDoc so the doc id matches the uid
-      await setDoc(doc(db, 'custom_users', uid), {
+      // Save profile in custom_users via API so the doc id matches the uid
+      await api.createDoc('custom_users', {
         id: uid,
         name: authName,
         email: authEmail,
         role: authRole,
         agency: (authRole === 'operator' || authRole === 'driver') ? authAgency : 'NCTA Regulator',
         status: 'Active',
-        createdAt: serverTimestamp()
+        createdAt: new Date().toISOString()
       });
       
       setAuthSuccess("Registration successful! Welcome to RCTTS.");
@@ -421,21 +411,11 @@ export default function App() {
       const displayName = userCredential.user.displayName || 'Google User';
 
       // Check if user has an existing record in custom_users
-      const userDocRef = doc(db, 'custom_users', uid);
-      const usersSnap = await getDocs(query(collection(db, 'custom_users')));
-      const match = usersSnap.docs.find(d => d.id === uid || d.data().email === email);
-
+      const users = await api.getList('custom_users');
+      const match = users.find((d: any) => d.id === uid || d.email === email);
       if (!match) {
         // Automatically provision a client/passenger profile for first-time Google sign-ins
-        await setDoc(doc(db, 'custom_users', uid), {
-          id: uid,
-          name: displayName,
-          email: email,
-          role: 'recipient' as UserPersona,
-          agency: 'NCTA Regulator',
-          status: 'Active',
-          createdAt: serverTimestamp()
-        });
+        await api.createDoc('custom_users', { id: uid, name: displayName, email, role: 'recipient', agency: 'NCTA Regulator', status: 'Active', createdAt: new Date().toISOString() });
       }
       
       setAuthSuccess("Google sign-in validated!");
@@ -463,13 +443,13 @@ export default function App() {
     }
     setAgencyDriverState('saving');
     try {
-      await addDoc(collection(db, 'drivers'), {
+      await api.createDoc('drivers', {
         name: newAgencyDriverForm.name,
         license: newAgencyDriverForm.license,
         agency: agencyName,
         vehicle: newAgencyDriverForm.vehicle,
         status: newAgencyDriverForm.status,
-        createdAt: serverTimestamp()
+        createdAt: new Date().toISOString()
       });
       setAgencyDriverState('success');
       setNewAgencyDriverForm({
@@ -494,13 +474,13 @@ export default function App() {
     }
     setAgencyStaffState('saving');
     try {
-      await addDoc(collection(db, 'custom_users'), {
+      await api.createDoc('custom_users', {
         name: newAgencyStaffForm.name,
         email: newAgencyStaffForm.email,
         role: newAgencyStaffForm.role,
         agency: agencyName,
         status: 'Active',
-        createdAt: serverTimestamp()
+        createdAt: new Date().toISOString()
       });
       setAgencyStaffState('success');
       setNewAgencyStaffForm({
@@ -521,7 +501,7 @@ export default function App() {
       return;
     }
     try {
-      await deleteDoc(doc(db, 'custom_users', staffId));
+      await api.deleteDocApi('custom_users', staffId);
     } catch (err) {
       console.error("Error deleting agency staff: ", err);
       alert("Failed to delete staff member. Verify permissions.");
@@ -533,7 +513,7 @@ export default function App() {
       return;
     }
     try {
-      await deleteDoc(doc(db, 'drivers', driverId));
+      await api.deleteDocApi('drivers', driverId);
     } catch (err) {
       console.error("Error deleting driver: ", err);
       alert("Failed to delete driver. Verify permissions.");
@@ -543,7 +523,7 @@ export default function App() {
   const handleToggleDriverStatus = async (driverId: string, currentStatus: string) => {
     const nextStatus = currentStatus === 'On Duty' ? 'Resting' : 'On Duty';
     try {
-      await updateDoc(doc(db, 'drivers', driverId), { status: nextStatus });
+      await api.updateDocApi('drivers', driverId, { status: nextStatus, updatedAt: new Date().toISOString() });
     } catch (err) {
       console.error("Error toggling driver status: ", err);
       alert("Failed to update status.");
@@ -558,13 +538,13 @@ export default function App() {
     }
     setUserCreationState('saving');
     try {
-      await addDoc(collection(db, 'custom_users'), {
+      await api.createDoc('custom_users', {
         name: newUserForm.name,
         email: newUserForm.email,
         role: newUserForm.role,
         agency: newUserForm.agency,
         status: newUserForm.status,
-        createdAt: serverTimestamp()
+        createdAt: new Date().toISOString()
       });
       setUserCreationState('success');
       setNewUserForm({
@@ -596,16 +576,11 @@ export default function App() {
     setTimeout(async () => {
       const path = 'tickets';
       try {
-        const q = query(collection(db, path));
-        const snap = await getDocs(q);
-        const found = snap.docs.find(d => 
-          `#RW-${d.id.slice(0, 4).toUpperCase()}` === queryVal || 
-          `RW-${d.id.slice(0, 4).toUpperCase()}` === queryVal || 
-          d.id.toUpperCase() === queryVal.toUpperCase()
-        );
-        setTrackResult(found ? { id: found.id, ...found.data() } : null);
+        const list: any[] = await api.getList(path);
+        const found = list.find(d => `#RW-${String(d.id).slice(0,4).toUpperCase()}` === queryVal || `RW-${String(d.id).slice(0,4).toUpperCase()}` === queryVal || String(d.id).toUpperCase() === queryVal.toUpperCase());
+        setTrackResult(found || null);
       } catch (error) {
-        handleFirestoreError(error, OperationType.GET, path);
+        console.error(error);
       } finally {
         setTrackingLoading(false);
       }
@@ -726,32 +701,38 @@ export default function App() {
 
   useEffect(() => {
     fetchFundraising();
-    const unsubTickets = onSnapshot(query(collection(db, 'tickets'), orderBy('createdAt', 'desc')), (snap) => {
-      setTickets(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    }, (error) => handleFirestoreError(error, OperationType.GET, 'tickets'));
 
-    const unsubAgencies = onSnapshot(collection(db, 'agencies'), (snap) => {
-      setAgencies(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    }, (error) => handleFirestoreError(error, OperationType.GET, 'agencies'));
+    let unsubscribers: Array<() => void> = [];
 
-    const unsubRRA = onSnapshot(collection(db, 'rra_records'), (snap) => {
-      setRraRecords(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    }, (error) => handleFirestoreError(error, OperationType.GET, 'rra_records'));
+    const subscribeCollection = async (name: string, setter: (v: any[]) => void) => {
+      try {
+        const list = await api.getList(name);
+        setter(list || []);
+      } catch (e) {
+        console.error(`Failed to fetch ${name}:`, e);
+      }
+      const unsub = api.subscribe(name, (ev) => {
+        const payload = ev.payload;
+        if (ev.event === 'create') {
+          setter(prev => [payload, ...prev]);
+        } else if (ev.event === 'update') {
+          setter(prev => prev.map(p => p.id === payload.id ? { ...p, ...payload } : p));
+        } else if (ev.event === 'delete') {
+          setter(prev => prev.filter(p => p.id !== payload.id));
+        }
+      });
+      unsubscribers.push(unsub);
+    };
 
-    const unsubDrivers = onSnapshot(collection(db, 'drivers'), (snap) => {
-      setDrivers(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    }, (error) => handleFirestoreError(error, OperationType.GET, 'drivers'));
-
-    const unsubCustomUsers = onSnapshot(collection(db, 'custom_users'), (snap) => {
-      setCustomUsers(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    }, (error) => handleFirestoreError(error, OperationType.GET, 'custom_users'));
+    subscribeCollection('tickets', setTickets);
+    subscribeCollection('agencies', setAgencies);
+    subscribeCollection('rra_records', setRraRecords);
+    subscribeCollection('drivers', setDrivers);
+    subscribeCollection('custom_users', setCustomUsers);
 
     return () => {
-      unsubTickets();
-      unsubAgencies();
-      unsubRRA();
-      unsubDrivers();
-      unsubCustomUsers();
+      unsubscribers.forEach(u => u());
+      unsubscribers = [];
     };
   }, []);
 
@@ -816,7 +797,7 @@ export default function App() {
             setBroadcastingCoords({ lat: latitude, lng: longitude });
 
             try {
-              await updateDoc(doc(db, 'tickets', ticketId), {
+              await api.updateDocApi('tickets', ticketId, {
                 currentLat: latitude,
                 currentLng: longitude,
                 status: 'In Transit',
@@ -887,8 +868,8 @@ export default function App() {
             
             setBroadcastingCoords({ lat: currentLat, lng: currentLng });
             
-            // Push simulated steps straight to Firestore ticket
-            updateDoc(doc(db, 'tickets', broadcastingTicketId), {
+            // Push simulated steps straight to tickets via API
+            api.updateDocApi('tickets', broadcastingTicketId, {
               currentLat,
               currentLng,
               status: nextP >= 0.95 ? 'Delivered' : (nextP > 0.1 ? 'In Transit' : 'Picked Up'),
@@ -918,7 +899,7 @@ export default function App() {
     
     setBroadcastingCoords({ lat, lng });
     try {
-      await updateDoc(doc(db, 'tickets', broadcastingTicketId), {
+      await api.updateDocApi('tickets', broadcastingTicketId, {
         currentLat: lat,
         currentLng: lng,
         status: 'In Transit',
@@ -1777,16 +1758,16 @@ export default function App() {
                   }
                   
                   try {
-                    await addDoc(collection(db, 'tickets'), {
+                    await api.createDoc('tickets', {
                       ...formData,
                       weight: Number(formData.weight),
                       declaredValue: Number(formData.value || 0),
                       agencyId: agencies.find(a => a.name === formData.agency)?.id || '',
                       status: 'Created',
-                      createdAt: serverTimestamp()
+                      createdAt: new Date().toISOString()
                     });
                   } catch (error) {
-                    handleFirestoreError(error, OperationType.WRITE, 'tickets');
+                    console.error('Ticket create failed:', error);
                   }
                   setFormData({
                     sname: 'Mutesi Claudine', sphone: '0788000000',
