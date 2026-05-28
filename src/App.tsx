@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, signInWithPopup, signInWithRedirect, getRedirectResult, GoogleAuthProvider } from 'firebase/auth';
-import { auth } from './firebase';
-import api from './api';
-import wsClient from './ws';
+import { collection, onSnapshot, query, orderBy, addDoc, setDoc, serverTimestamp, getDocs, updateDoc, deleteDoc, doc } from 'firebase/firestore';
+import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
+import { db, auth } from './firebase';
 import TrackingMap from './components/TrackingMap';
 import GeneralFleetMap from './components/GeneralFleetMap';
 import { getRoutePath, getInterpolatedPoint } from './utils/routing';
@@ -98,32 +97,6 @@ export default function App() {
       setAuthLoading(false);
     });
     return () => unsubAuth();
-  }, []);
-
-  // Handle redirect sign-in results (when signInWithRedirect was used)
-  useEffect(() => {
-    const handleRedirect = async () => {
-      try {
-        const result = await getRedirectResult(auth);
-        if (result && result.user) {
-          // Same provisioning flow used after popup sign-in
-          const uid = result.user.uid;
-          const email = result.user.email || '';
-          const displayName = result.user.displayName || 'Google User';
-
-          const users = await api.getList('custom_users');
-          const match = users.find((d: any) => d.id === uid || d.email === email);
-          if (!match) {
-            await api.createDoc('custom_users', { id: uid, name: displayName, email, role: 'recipient', agency: 'NCTA Regulator', status: 'Active', createdAt: new Date().toISOString() });
-          }
-          setAuthSuccess('Google sign-in validated (redirect)!');
-        }
-      } catch (err: any) {
-        console.error('Redirect result handling failed:', err);
-        // don't surface to UI aggressively; onAuthStateChanged will update state
-      }
-    };
-    handleRedirect();
   }, []);
 
   // Compute internal permissions and roles by matching user ID or email with Custom Users pool
@@ -287,11 +260,12 @@ export default function App() {
     setTimeout(async () => {
       const path = 'tickets';
       try {
-        const list: any[] = await api.getList(path);
-        const found = list.find(d => `#RW-${String(d.id).slice(0,4).toUpperCase()}` === searchId || d.id === searchId);
-        setTrackResult(found || null);
+        const q = query(collection(db, path));
+        const snap = await getDocs(q);
+        const found = snap.docs.find(d => `#RW-${d.id.slice(0, 4).toUpperCase()}` === searchId || d.id === searchId);
+        setTrackResult(found ? { id: found.id, ...found.data() } : null);
       } catch (error) {
-        console.error(error);
+        handleFirestoreError(error, OperationType.GET, path);
       } finally {
         setTrackingLoading(false);
       }
@@ -307,11 +281,12 @@ export default function App() {
     setTimeout(async () => {
       const path = 'tickets';
       try {
-        const list: any[] = await api.getList(path);
-        const found = list.find(d => `#RW-${String(d.id).slice(0,4).toUpperCase()}` === formatted || d.id === id);
-        setTrackResult(found || null);
+        const q = query(collection(db, path));
+        const snap = await getDocs(q);
+        const found = snap.docs.find(d => `#RW-${d.id.slice(0, 4).toUpperCase()}` === formatted || d.id === id);
+        setTrackResult(found ? { id: found.id, ...found.data() } : null);
       } catch (error) {
-        console.error(error);
+        handleFirestoreError(error, OperationType.GET, path);
       } finally {
         setTrackingLoading(false);
       }
@@ -331,15 +306,15 @@ export default function App() {
       const userCredential = await createUserWithEmailAndPassword(auth, authEmail, authPassword);
       const uid = userCredential.user.uid;
       
-      // Save profile in custom_users via API so the doc id matches the uid
-      await api.createDoc('custom_users', {
+      // Save profile in Firestore custom_users using setDoc so the doc id matches the uid
+      await setDoc(doc(db, 'custom_users', uid), {
         id: uid,
         name: authName,
         email: authEmail,
         role: authRole,
         agency: (authRole === 'operator' || authRole === 'driver') ? authAgency : 'NCTA Regulator',
         status: 'Active',
-        createdAt: new Date().toISOString()
+        createdAt: serverTimestamp()
       });
       
       setAuthSuccess("Registration successful! Welcome to RCTTS.");
@@ -393,30 +368,27 @@ export default function App() {
     setAuthSuccess(null);
     try {
       const provider = new GoogleAuthProvider();
-      // Try popup first (preferred for UX). If browser blocks popups, fall back to redirect.
-      let userCredential: any = null;
-      try {
-        userCredential = await signInWithPopup(auth, provider);
-      } catch (popupErr: any) {
-        console.warn('Popup sign-in failed, falling back to redirect:', popupErr?.code || popupErr?.message || popupErr);
-        // Detect common popup-blocked errors and use redirect as a reliable fallback
-        if (popupErr && (popupErr.code === 'auth/popup-blocked' || popupErr.code === 'auth/popup-closed-by-user' || String(popupErr.message).toLowerCase().includes('popup') || popupErr.code === 'auth/operation-not-supported-in-this-environment')) {
-          setAuthSuccess('Popup blocked. Redirecting to Google sign-in...');
-          await signInWithRedirect(auth, provider);
-          return;
-        }
-        throw popupErr;
-      }
+      const userCredential = await signInWithPopup(auth, provider);
       const uid = userCredential.user.uid;
       const email = userCredential.user.email || '';
       const displayName = userCredential.user.displayName || 'Google User';
 
       // Check if user has an existing record in custom_users
-      const users = await api.getList('custom_users');
-      const match = users.find((d: any) => d.id === uid || d.email === email);
+      const userDocRef = doc(db, 'custom_users', uid);
+      const usersSnap = await getDocs(query(collection(db, 'custom_users')));
+      const match = usersSnap.docs.find(d => d.id === uid || d.data().email === email);
+
       if (!match) {
         // Automatically provision a client/passenger profile for first-time Google sign-ins
-        await api.createDoc('custom_users', { id: uid, name: displayName, email, role: 'recipient', agency: 'NCTA Regulator', status: 'Active', createdAt: new Date().toISOString() });
+        await setDoc(doc(db, 'custom_users', uid), {
+          id: uid,
+          name: displayName,
+          email: email,
+          role: 'recipient' as UserPersona,
+          agency: 'NCTA Regulator',
+          status: 'Active',
+          createdAt: serverTimestamp()
+        });
       }
       
       setAuthSuccess("Google sign-in validated!");
@@ -444,13 +416,13 @@ export default function App() {
     }
     setAgencyDriverState('saving');
     try {
-      await api.createDoc('drivers', {
+      await addDoc(collection(db, 'drivers'), {
         name: newAgencyDriverForm.name,
         license: newAgencyDriverForm.license,
         agency: agencyName,
         vehicle: newAgencyDriverForm.vehicle,
         status: newAgencyDriverForm.status,
-        createdAt: new Date().toISOString()
+        createdAt: serverTimestamp()
       });
       setAgencyDriverState('success');
       setNewAgencyDriverForm({
@@ -475,13 +447,13 @@ export default function App() {
     }
     setAgencyStaffState('saving');
     try {
-      await api.createDoc('custom_users', {
+      await addDoc(collection(db, 'custom_users'), {
         name: newAgencyStaffForm.name,
         email: newAgencyStaffForm.email,
         role: newAgencyStaffForm.role,
         agency: agencyName,
         status: 'Active',
-        createdAt: new Date().toISOString()
+        createdAt: serverTimestamp()
       });
       setAgencyStaffState('success');
       setNewAgencyStaffForm({
@@ -502,7 +474,7 @@ export default function App() {
       return;
     }
     try {
-      await api.deleteDocApi('custom_users', staffId);
+      await deleteDoc(doc(db, 'custom_users', staffId));
     } catch (err) {
       console.error("Error deleting agency staff: ", err);
       alert("Failed to delete staff member. Verify permissions.");
@@ -514,7 +486,7 @@ export default function App() {
       return;
     }
     try {
-      await api.deleteDocApi('drivers', driverId);
+      await deleteDoc(doc(db, 'drivers', driverId));
     } catch (err) {
       console.error("Error deleting driver: ", err);
       alert("Failed to delete driver. Verify permissions.");
@@ -524,7 +496,7 @@ export default function App() {
   const handleToggleDriverStatus = async (driverId: string, currentStatus: string) => {
     const nextStatus = currentStatus === 'On Duty' ? 'Resting' : 'On Duty';
     try {
-      await api.updateDocApi('drivers', driverId, { status: nextStatus, updatedAt: new Date().toISOString() });
+      await updateDoc(doc(db, 'drivers', driverId), { status: nextStatus });
     } catch (err) {
       console.error("Error toggling driver status: ", err);
       alert("Failed to update status.");
@@ -539,13 +511,13 @@ export default function App() {
     }
     setUserCreationState('saving');
     try {
-      await api.createDoc('custom_users', {
+      await addDoc(collection(db, 'custom_users'), {
         name: newUserForm.name,
         email: newUserForm.email,
         role: newUserForm.role,
         agency: newUserForm.agency,
         status: newUserForm.status,
-        createdAt: new Date().toISOString()
+        createdAt: serverTimestamp()
       });
       setUserCreationState('success');
       setNewUserForm({
@@ -577,11 +549,16 @@ export default function App() {
     setTimeout(async () => {
       const path = 'tickets';
       try {
-        const list: any[] = await api.getList(path);
-        const found = list.find(d => `#RW-${String(d.id).slice(0,4).toUpperCase()}` === queryVal || `RW-${String(d.id).slice(0,4).toUpperCase()}` === queryVal || String(d.id).toUpperCase() === queryVal.toUpperCase());
-        setTrackResult(found || null);
+        const q = query(collection(db, path));
+        const snap = await getDocs(q);
+        const found = snap.docs.find(d => 
+          `#RW-${d.id.slice(0, 4).toUpperCase()}` === queryVal || 
+          `RW-${d.id.slice(0, 4).toUpperCase()}` === queryVal || 
+          d.id.toUpperCase() === queryVal.toUpperCase()
+        );
+        setTrackResult(found ? { id: found.id, ...found.data() } : null);
       } catch (error) {
-        console.error(error);
+        handleFirestoreError(error, OperationType.GET, path);
       } finally {
         setTrackingLoading(false);
       }
@@ -702,50 +679,32 @@ export default function App() {
 
   useEffect(() => {
     fetchFundraising();
+    const unsubTickets = onSnapshot(query(collection(db, 'tickets'), orderBy('createdAt', 'desc')), (snap) => {
+      setTickets(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (error) => handleFirestoreError(error, OperationType.GET, 'tickets'));
 
-    let unsubscribers: Array<() => void> = [];
+    const unsubAgencies = onSnapshot(collection(db, 'agencies'), (snap) => {
+      setAgencies(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (error) => handleFirestoreError(error, OperationType.GET, 'agencies'));
 
-    const fetchInitial = async (name: string, setter: (v: any[]) => void) => {
-      try {
-        const list = await api.getList(name);
-        setter(list || []);
-      } catch (e) { console.error(e); }
-    };
+    const unsubRRA = onSnapshot(collection(db, 'rra_records'), (snap) => {
+      setRraRecords(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (error) => handleFirestoreError(error, OperationType.GET, 'rra_records'));
 
-    fetchInitial('tickets', setTickets);
-    fetchInitial('agencies', setAgencies);
-    fetchInitial('rra_records', setRraRecords);
-    fetchInitial('drivers', setDrivers);
-    fetchInitial('custom_users', setCustomUsers);
+    const unsubDrivers = onSnapshot(collection(db, 'drivers'), (snap) => {
+      setDrivers(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (error) => handleFirestoreError(error, OperationType.GET, 'drivers'));
 
-    const handler = (topic: string, msg: any) => {
-      const ev = msg; // server sends { event, payload }
-      const payload = ev.payload || ev;
-      if (topic === 'tickets') {
-        if (ev.event === 'create') setTickets(prev => [payload, ...prev]);
-        if (ev.event === 'update') setTickets(prev => prev.map(p => p.id === payload.id ? { ...p, ...payload } : p));
-        if (ev.event === 'delete') setTickets(prev => prev.filter(p => p.id !== payload.id));
-      }
-      if (topic === 'agencies') {
-        if (ev.event === 'create') setAgencies(prev => [payload, ...prev]);
-        if (ev.event === 'update') setAgencies(prev => prev.map(p => p.id === payload.id ? { ...p, ...payload } : p));
-      }
-      if (topic === 'drivers') {
-        if (ev.event === 'create') setDrivers(prev => [payload, ...prev]);
-        if (ev.event === 'update') setDrivers(prev => prev.map(p => p.id === payload.id ? { ...p, ...payload } : p));
-      }
-      if (topic === 'custom_users') {
-        if (ev.event === 'create') setCustomUsers(prev => [payload, ...prev]);
-        if (ev.event === 'update') setCustomUsers(prev => prev.map(p => p.id === payload.id ? { ...p, ...payload } : p));
-      }
-    };
-
-    const unsub = wsClient.subscribe(handler);
-    unsubscribers.push(unsub);
+    const unsubCustomUsers = onSnapshot(collection(db, 'custom_users'), (snap) => {
+      setCustomUsers(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (error) => handleFirestoreError(error, OperationType.GET, 'custom_users'));
 
     return () => {
-      unsubscribers.forEach(u => u());
-      unsubscribers = [];
+      unsubTickets();
+      unsubAgencies();
+      unsubRRA();
+      unsubDrivers();
+      unsubCustomUsers();
     };
   }, []);
 
@@ -765,86 +724,37 @@ export default function App() {
       setGpsBroadcasting(false);
       return;
     }
-    // Use Permissions API when available to inform the user and avoid silent failures
-    const attemptStart = async () => {
-      try {
-        if ((navigator as any).permissions && (navigator as any).permissions.query) {
-          try {
-            const perm = await (navigator as any).permissions.query({ name: 'geolocation' });
-            if (perm.state === 'denied') {
-              alert('Location access is denied for this origin. Please enable location permission in your browser for live GPS broadcast or use the simulator.');
-              setIsSimulationActive(true);
-              setGpsBroadcasting(false);
-              return;
-            }
-          } catch (e) {
-            // ignore permission query errors
-          }
-        }
-
-        // Prompt for permission explicitly using getCurrentPosition so the browser shows a prompt
-        const getCurrentPositionAsync = () => new Promise<GeolocationPosition>((resolve, reject) => {
-          navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
-        });
-
+    
+    const watchId = navigator.geolocation.watchPosition(
+      async (position) => {
+        const { latitude, longitude } = position.coords;
+        setBroadcastingCoords({ lat: latitude, lng: longitude });
+        
         try {
-          const pos = await getCurrentPositionAsync();
-          const { latitude, longitude } = pos.coords;
-          setBroadcastingCoords({ lat: latitude, lng: longitude });
-        } catch (err: any) {
-          console.error('Initial GPS permission or position failed:', err);
-          if (err && err.code === 1) { // PERMISSION_DENIED
-            alert('Please allow location access in your browser to broadcast live GPS. Falling back to simulator.');
-            setIsSimulationActive(true);
-            setGpsBroadcasting(false);
-            return;
-          }
-          // Other errors fallback to simulator
-          setIsSimulationActive(true);
-          return;
+          await updateDoc(doc(db, 'tickets', ticketId), {
+            currentLat: latitude,
+            currentLng: longitude,
+            status: 'In Transit',
+            lastGpsUpdate: new Date().toISOString()
+          });
+        } catch (err) {
+          console.error("Failed to update Firestore coordinates docs: ", err);
         }
-
-        const watchId = navigator.geolocation.watchPosition(
-          async (position) => {
-            const { latitude, longitude } = position.coords;
-            setBroadcastingCoords({ lat: latitude, lng: longitude });
-
-            try {
-              await api.updateDocApi('tickets', ticketId, {
-                currentLat: latitude,
-                currentLng: longitude,
-                status: 'In Transit',
-                lastGpsUpdate: new Date().toISOString()
-              });
-            } catch (err) {
-              console.error("Failed to update Firestore coordinates docs: ", err);
-            }
-          },
-          (err) => {
-            console.error("GPS telemetry collection failed: ", err);
-            if (err && err.code === 1) {
-              alert('Location permission was denied. Enabling virtual route simulator instead.');
-            } else {
-              alert(`Hardware location error: ${err?.message || 'Unknown error'}. Enabling virtual route simulator instead.`);
-            }
-            setIsSimulationActive(true);
-          },
-          {
-            enableHighAccuracy: true,
-            timeout: 10000,
-            maximumAge: 0
-          }
-        );
-
-        setGpsWatchId(watchId);
-      } catch (outerErr) {
-        console.error('Failed to start GPS broadcast:', outerErr);
+      },
+      (err) => {
+        console.error("GPS telemetry collection failed: ", err);
+        alert(`Hardware location error: ${err.message}. Enabling virtual route simulator instead.`);
+        // Fallback to simulation automatically for convenience
         setIsSimulationActive(true);
-        setGpsBroadcasting(false);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0
       }
-    };
-
-    attemptStart();
+    );
+    
+    setGpsWatchId(watchId);
   };
 
   const stopLiveGpsBroadcast = async () => {
@@ -881,8 +791,8 @@ export default function App() {
             
             setBroadcastingCoords({ lat: currentLat, lng: currentLng });
             
-            // Push simulated steps straight to tickets via API
-            api.updateDocApi('tickets', broadcastingTicketId, {
+            // Push simulated steps straight to Firestore ticket
+            updateDoc(doc(db, 'tickets', broadcastingTicketId), {
               currentLat,
               currentLng,
               status: nextP >= 0.95 ? 'Delivered' : (nextP > 0.1 ? 'In Transit' : 'Picked Up'),
@@ -912,7 +822,7 @@ export default function App() {
     
     setBroadcastingCoords({ lat, lng });
     try {
-      await api.updateDocApi('tickets', broadcastingTicketId, {
+      await updateDoc(doc(db, 'tickets', broadcastingTicketId), {
         currentLat: lat,
         currentLng: lng,
         status: 'In Transit',
@@ -1771,16 +1681,16 @@ export default function App() {
                   }
                   
                   try {
-                    await api.createDoc('tickets', {
+                    await addDoc(collection(db, 'tickets'), {
                       ...formData,
                       weight: Number(formData.weight),
                       declaredValue: Number(formData.value || 0),
                       agencyId: agencies.find(a => a.name === formData.agency)?.id || '',
                       status: 'Created',
-                      createdAt: new Date().toISOString()
+                      createdAt: serverTimestamp()
                     });
                   } catch (error) {
-                    console.error('Ticket create failed:', error);
+                    handleFirestoreError(error, OperationType.WRITE, 'tickets');
                   }
                   setFormData({
                     sname: 'Mutesi Claudine', sphone: '0788000000',
